@@ -11,18 +11,18 @@ app.use(express.json());
 // LICENSE DATABASE (Use a real DB in production)
 // ============================================
 const licenses = {
-    "ASAD-XXXX-1234-ABCD": {
+    "almuhannaboss-XXXX-1234-ABCD": {
         user: "User1",
         active: true,
-        expiresAt: "2027-06-01",
+        expiresAt: "2026-11-10",
         maxDevices: 1,
         activeDevices: [],
         createdAt: "2026-11-10"
     },
-    "ASAD-XXXX-5678-EFGH": {
+    "almuhannaboss-XXXX-5678-EFGH": {
         user: "User2",
         active: true,
-        expiresAt: "2027-01-01",
+        expiresAt: "2026-11-10",
         maxDevices: 1,
         activeDevices: [],
         createdAt: "2026-11-10"
