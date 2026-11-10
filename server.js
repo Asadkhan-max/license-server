@@ -14,7 +14,7 @@ const licenses = {
     "almuhannaboss-XXXX-1234-ABCD": {
         user: "User1",
         active: true,
-        expiresAt: "2026-11-10",
+        expiresAt: "2026-11-11",
         maxDevices: 1,
         activeDevices: [],
         createdAt: "2026-11-10"
@@ -22,7 +22,7 @@ const licenses = {
     "almuhannaboss-XXXX-5678-EFGH": {
         user: "User2",
         active: true,
-        expiresAt: "2026-11-10",
+        expiresAt: "2026-11-11",
         maxDevices: 1,
         activeDevices: [],
         createdAt: "2026-11-10"
