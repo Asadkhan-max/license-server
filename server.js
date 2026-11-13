@@ -98,7 +98,7 @@ app.get('/api/script', rateLimit, (req, res) => {
     }
 
     // =============================================
-    // YOUR ACTUAL GRASS TO CSV EXPORTER SCRIPT
+    // YOUR ACTUAL GRASS TO CSV EXPORTER SCRIPT v7.0
     // =============================================
     const scriptCode = `
 (function() {
@@ -388,6 +388,9 @@ app.get('/api/script', rateLimit, (req, res) => {
         return scraped;
     }
 
+    // ============================================
+    // SCRAPE: Package Details (with lb to kg conversion)
+    // ============================================
     function scrapePackageDetails() {
         var scraped = {};
         var dimensions = getFieldDeep('Dimensions');
@@ -406,8 +409,22 @@ app.get('/api/script', rateLimit, (req, res) => {
 
         if (scaleWeight) {
             scraped.scaleWeight = scaleWeight;
-            var weightMatch = scaleWeight.match(/([\\d.]+)/);
-            if (weightMatch) scraped.weight = weightMatch[1];
+            var weightMatch = scaleWeight.match(/([\\d.]+)\\s*(kg|lbs?|pounds?)?/i);
+            if (weightMatch) {
+                var weightValue = parseFloat(weightMatch[1]);
+                var weightUnit = (weightMatch[2] || 'kg').toLowerCase();
+
+                // Convert pounds to kg if needed
+                if (weightUnit === 'lb' || weightUnit === 'lbs' || weightUnit === 'pound' || weightUnit === 'pounds') {
+                    weightValue = weightValue * 0.453592;
+                    weightValue = Math.round(weightValue * 100) / 100;
+                    scraped.weightConverted = true;
+                    scraped.originalWeight = weightMatch[1] + ' ' + weightMatch[2];
+                    console.log('[GRASS Exporter] Weight converted: ' + weightMatch[1] + ' lbs -> ' + weightValue + ' kg');
+                }
+
+                scraped.weight = String(weightValue);
+            }
         }
 
         if (shipperId) {
@@ -608,7 +625,7 @@ app.get('/api/script', rateLimit, (req, res) => {
         panel.style.cssText = 'position:fixed;top:10px;right:10px;z-index:99999;background:white;border:2px solid #FF9900;border-radius:10px;padding:12px 14px;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-family:Arial,sans-serif;min-width:240px;max-width:300px;';
 
         var titleBar = document.createElement('div');
-        titleBar.textContent = 'GRASS CSV Exporter v6';
+        titleBar.textContent = 'GRASS CSV Exporter v7.0';
         titleBar.style.cssText = 'font-weight:bold;font-size:14px;margin-bottom:8px;color:#232F3E;border-bottom:1px solid #eee;padding-bottom:6px;';
         panel.appendChild(titleBar);
 
@@ -660,7 +677,7 @@ app.get('/api/script', rateLimit, (req, res) => {
                 'Order ID: ' + (d.orderId || '(empty)') + '\\n' +
                 'Date: ' + getTodayFormatted() + ' (today)\\n' +
                 'Dimensions: ' + (d.dimL || '?') + ' x ' + (d.dimW || '?') + ' x ' + (d.dimH || '?') + '\\n' +
-                'Weight: ' + previewWeight + ' kg\\n' +
+                'Weight: ' + previewWeight + ' kg' + (d.weightConverted ? ' (converted from ' + d.originalWeight + ')' : '') + (parseFloat(d.weight) < 0.1 ? ' (bumped to 0.1)' : '') + '\\n' +
                 'Ship Option: ' + (d.customerShipOption || '(empty)') + '\\n' +
                 'Destination: ' + dest + '\\n' +
                 'Country of Origin: ' + coo + '\\n' +
