@@ -1,4 +1,3 @@
-
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
@@ -134,6 +133,9 @@ app.get('/api/script', rateLimit, (req, res) => {
 
     var selectedRowIndex = null;
 
+    // ============================================
+    // TODAY'S DATE as YYYYMMDD
+    // ============================================
     function getTodayFormatted() {
         var now = new Date();
         var yyyy = now.getFullYear();
@@ -142,13 +144,19 @@ app.get('/api/script', rateLimit, (req, res) => {
         return '' + yyyy + mm + dd;
     }
 
+    // ============================================
+    // STORAGE
+    // ============================================
     var storageKey = 'grassExporterData_' + (new URLSearchParams(window.location.search).get('id') || 'default');
     var collectedData = JSON.parse(sessionStorage.getItem(storageKey) || '{}');
+
+    var forceOverwrite = false;
 
     function saveData(newData) {
         var keys = Object.keys(newData);
         for (var k = 0; k < keys.length; k++) {
-            if (newData[keys[k]]) {
+            var key = keys[k];
+            if (newData[key] && (forceOverwrite || key === 'hsCode' || !collectedData[key])) {
                 collectedData[keys[k]] = newData[keys[k]];
             }
         }
@@ -166,11 +174,17 @@ app.get('/api/script', rateLimit, (req, res) => {
         updateButtonStatus();
     }
 
+    // ============================================
+    // HELPER: Clean title — only alphabets
+    // ============================================
     function cleanTitle(title) {
         if (!title) return '';
         return title.replace(/[^a-zA-Z\\u00C0-\\u024F]/g, '');
     }
 
+    // ============================================
+    // SHADOW DOM: Recursively get ALL elements
+    // ============================================
     function getAllElements(root) {
         var elements = [];
         var children = root.querySelectorAll('*');
@@ -186,11 +200,9 @@ app.get('/api/script', rateLimit, (req, res) => {
         return elements;
     }
 
-    function getDeepText(root) {
-        var allEls = getAllElements(root || document);
-        return allEls;
-    }
-
+    // ============================================
+    // HELPER: Find value by label (Shadow DOM aware)
+    // ============================================
     function getFieldDeep(label) {
         var allEls = getAllElements(document);
 
@@ -236,6 +248,9 @@ app.get('/api/script', rateLimit, (req, res) => {
         return '';
     }
 
+    // ============================================
+    // HELPER: Find table with specific headers
+    // ============================================
     function findTableData(headerNames) {
         var allEls = getAllElements(document);
         var result = {};
@@ -275,6 +290,9 @@ app.get('/api/script', rateLimit, (req, res) => {
         return result;
     }
 
+    // ============================================
+    // ROW SELECTION
+    // ============================================
     function clearRowHighlights() {
         var allEls = getAllElements(document);
         for (var i = 0; i < allEls.length; i++) {
@@ -317,9 +335,11 @@ app.get('/api/script', rateLimit, (req, res) => {
                                 row.style.backgroundColor = '#FFF8E7';
                                 row.setAttribute('data-grass-selected', 'true');
                                 selectedRowIndex = rowIndex;
-                                console.log('[GRASS Exporter] Row ' + (rowIndex + 1) + ' selected');
+                                console.log('[GRASS Exporter] Row ' + (rowIndex + 1) + ' selected — auto-updating...');
+                                forceOverwrite = true;
                                 scrapeOverviewTab();
                                 scrapeCurrentPage();
+                                forceOverwrite = false;
                             });
                         })(rows[r], r);
                     }
@@ -328,15 +348,22 @@ app.get('/api/script', rateLimit, (req, res) => {
         }
     }
 
+    // ============================================
+    // HELPER: Detect destination
+    // ============================================
     function detectDestination(shipOption) {
         if (!shipOption) return '';
         var opt = shipOption.toLowerCase();
         if (opt.indexOf('us') >= 0) return 'us';
         if (opt.indexOf('eu') >= 0) return 'eu';
         if (opt.indexOf('auh') >= 0 || opt.indexOf('ae') >= 0) return 'auh';
+        if (opt.indexOf('intl') >= 0) return 'us';
         return '';
     }
 
+    // ============================================
+    // SCRAPE: Overview Tab
+    // ============================================
     function scrapeOverviewTab() {
         var scraped = {};
         var tableData = findTableData(['Title', 'OurPrice', 'Qty', 'ASIN']);
@@ -389,10 +416,11 @@ app.get('/api/script', rateLimit, (req, res) => {
     }
 
     // ============================================
-    // SCRAPE: Package Details (with lb to kg conversion)
+    // SCRAPE: Package Details (with lb → kg conversion)
     // ============================================
     function scrapePackageDetails() {
         var scraped = {};
+
         var dimensions = getFieldDeep('Dimensions');
         var scaleWeight = getFieldDeep('Scale Weight');
         var shipperId = getFieldDeep('Shipper Id');
@@ -420,7 +448,7 @@ app.get('/api/script', rateLimit, (req, res) => {
                     weightValue = Math.round(weightValue * 100) / 100;
                     scraped.weightConverted = true;
                     scraped.originalWeight = weightMatch[1] + ' ' + weightMatch[2];
-                    console.log('[GRASS Exporter] Weight converted: ' + weightMatch[1] + ' lbs -> ' + weightValue + ' kg');
+                    console.log('[GRASS Exporter] Weight converted: ' + weightMatch[1] + ' lbs → ' + weightValue + ' kg');
                 }
 
                 scraped.weight = String(weightValue);
@@ -439,30 +467,45 @@ app.get('/api/script', rateLimit, (req, res) => {
         return scraped;
     }
 
+    // ============================================
+    // SCRAPE: Customer Ship Option
+    // ============================================
     function scrapeShipOption() {
         var scraped = {};
         var shipOption = getFieldDeep('Customer Ship Option');
         if (shipOption) {
             scraped.customerShipOption = shipOption;
             scraped.destination = detectDestination(shipOption);
-            console.log('[GRASS Exporter] Ship Option scraped:', shipOption);
+            console.log('[GRASS Exporter] Ship Option scraped:', shipOption, '→ Destination:', scraped.destination);
             saveData(scraped);
         }
         return scraped;
     }
 
+    // ============================================
+    // SCRAPE: Order ID — EXPANDED PATTERNS
+    // ============================================
     function scrapeOrderId() {
         var scraped = {};
         var allEls = getAllElements(document);
 
+        var orderPatterns = [
+            /^Order\\s*:\\s*(\\d{3}-\\d{7}-\\d{7})$/,
+            /^Order\\s*:\\s*(\\d+-\\d+-\\d+)$/,
+            /Order\\s*:\\s*(\\d{3}-\\d{7}-\\d{7})/,
+            /Order\\s*:\\s*(\\d+-\\d+-\\d+)/
+        ];
+
         for (var i = 0; i < allEls.length; i++) {
             var text = allEls[i].textContent.trim();
-            var match = text.match(/^Order\\s*:\\s*(\\d{3}-\\d{7}-\\d{7})$/);
-            if (match) {
-                scraped.orderId = match[1];
-                console.log('[GRASS Exporter] Order ID scraped:', scraped.orderId);
-                saveData(scraped);
-                return scraped;
+            for (var p = 0; p < orderPatterns.length; p++) {
+                var match = text.match(orderPatterns[p]);
+                if (match) {
+                    scraped.orderId = match[1];
+                    console.log('[GRASS Exporter] Order ID scraped:', scraped.orderId);
+                    saveData(scraped);
+                    return scraped;
+                }
             }
         }
 
@@ -473,16 +516,35 @@ app.get('/api/script', rateLimit, (req, res) => {
                 var hMatch = el.textContent.trim().match(/(\\d{3}-\\d{7}-\\d{7})/);
                 if (hMatch) {
                     scraped.orderId = hMatch[1];
-                    console.log('[GRASS Exporter] Order ID from heading:', scraped.orderId);
+                    console.log('[GRASS Exporter] Order ID scraped from heading:', scraped.orderId);
+                    saveData(scraped);
+                    return scraped;
+                }
+                var hMatch2 = el.textContent.trim().match(/(\\d+-\\d+-\\d+)/);
+                if (hMatch2) {
+                    scraped.orderId = hMatch2[1];
+                    console.log('[GRASS Exporter] Order ID scraped from heading (loose):', scraped.orderId);
                     saveData(scraped);
                     return scraped;
                 }
             }
         }
 
+        // Fallback: get from URL
+        var urlMatch = window.location.href.match(/[?&]id=(\\d+-\\d+-\\d+)/);
+        if (urlMatch) {
+            scraped.orderId = urlMatch[1];
+            console.log('[GRASS Exporter] Order ID scraped from URL:', scraped.orderId);
+            saveData(scraped);
+            return scraped;
+        }
+
         return scraped;
     }
 
+    // ============================================
+    // SCRAPE ALL
+    // ============================================
     function scrapeCurrentPage() {
         scrapeOverviewTab();
         scrapePackageDetails();
@@ -491,6 +553,9 @@ app.get('/api/script', rateLimit, (req, res) => {
         attachRowClickListeners();
     }
 
+    // ============================================
+    // MISSING FIELDS CHECK
+    // ============================================
     function getMissingFields() {
         var missing = [];
         if (!collectedData.title) missing.push('Title (Overview tab)');
@@ -502,12 +567,18 @@ app.get('/api/script', rateLimit, (req, res) => {
         return missing;
     }
 
+    // ============================================
+    // HELPER: Enforce minimum weight of 0.1
+    // ============================================
     function enforceMinWeight(w) {
         var num = parseFloat(w) || 0;
         if (num < 0.1) num = 0.1;
         return String(num);
     }
 
+    // ============================================
+    // BUILD CSV
+    // ============================================
     function buildCSV() {
         var d = collectedData;
         var alphaTitle = cleanTitle(d.title || '');
@@ -516,13 +587,14 @@ app.get('/api/script', rateLimit, (req, res) => {
 
         var shipToRow = SHIP_TO_MAP[d.destination];
         if (!shipToRow) {
-            throw new Error('Unknown destination: "' + (d.destination || '') + '"');
+            throw new Error('Unknown destination: "' + (d.destination || '') + '". Could not match Customer Ship Option: "' + (d.customerShipOption || '') + '"');
         }
 
         var countryOfOrigin = COUNTRY_OF_ORIGIN_MAP[d.destination] || '';
         var shipperAccount = SHIPPER_ACCOUNT_MAP[d.destination] || '';
 
         var rows = [];
+
         rows.push(SHIP_FROM_ROW);
         rows.push(shipToRow);
 
@@ -545,9 +617,13 @@ app.get('/api/script', rateLimit, (req, res) => {
         ];
         rows.push(shipment.join('|'));
 
+        var pcs = parseInt(d.qty, 10) || 1;
+        var unitWeight = finalWeight;
+        var totalWeight = String(Math.round((parseFloat(unitWeight) * pcs) * 100) / 100);
+
         var packaging = [
             "1", "PACKAGING",
-            finalWeight, "kg",
+            totalWeight, "kg",
             d.dimL || '', d.dimW || '', d.dimH || '',
             "cm", "", "", ""
         ];
@@ -573,7 +649,7 @@ app.get('/api/script', rateLimit, (req, res) => {
             "PCS",
             d.price || '',
             d.currency || '',
-            finalWeight, finalWeight,
+            unitWeight, totalWeight,
             countryOfOrigin,
             "", "", "", ""
         ];
@@ -582,6 +658,9 @@ app.get('/api/script', rateLimit, (req, res) => {
         return rows.join('\\n');
     }
 
+    // ============================================
+    // DOWNLOAD CSV
+    // ============================================
     function downloadCSV(csvContent, filename) {
         var blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
         var link = document.createElement('a');
@@ -593,6 +672,9 @@ app.get('/api/script', rateLimit, (req, res) => {
         document.body.removeChild(link);
     }
 
+    // ============================================
+    // UPDATE BUTTON STATUS
+    // ============================================
     function updateButtonStatus() {
         var statusDiv = document.getElementById('grassStatusDiv');
         var exportBtn = document.getElementById('grassExportBtn');
@@ -600,32 +682,36 @@ app.get('/api/script', rateLimit, (req, res) => {
 
         var missing = getMissingFields();
         var collected = 6 - missing.length;
+
         var rowInfo = selectedRowIndex !== null ? ' (Row ' + (selectedRowIndex + 1) + ')' : ' (Row 1)';
 
         if (missing.length === 0) {
             exportBtn.style.backgroundColor = '#067D0E';
-            exportBtn.textContent = 'Export to CSV (Ready!)';
-            statusDiv.innerHTML = '<span style="color:#067D0E;">All ' + collected + '/6 fields collected!</span>' +
-                '<br><span style="color:#232F3E;font-size:10px;">Destination: <b>' + (collectedData.destination || '').toUpperCase() + '</b>' + rowInfo + '</span>';
+            exportBtn.textContent = '✅ Export to CSV (Ready!)';
+            statusDiv.innerHTML = '<span style="color:#067D0E;">✅ All ' + collected + '/6 fields collected!</span>' +
+                '<br><span style="color:#232F3E;font-size:10px;">📍 Destination: <b>' + (collectedData.destination || '').toUpperCase() + '</b>' + rowInfo + '</span>';
         } else {
             exportBtn.style.backgroundColor = '#FF9900';
-            exportBtn.textContent = 'Export to CSV (' + collected + '/6)';
-            statusDiv.innerHTML = '<span style="color:#cc0000;">Missing ' + missing.length + ':<br>' +
-                missing.map(function(m) { return '- ' + m; }).join('<br>') + '</span>' +
+            exportBtn.textContent = '📥 Export to CSV (' + collected + '/6)';
+            statusDiv.innerHTML = '<span style="color:#cc0000;">⚠️ Missing ' + missing.length + ':<br>' +
+                missing.map(function(m) { return '• ' + m; }).join('<br>') + '</span>' +
                 '<br><span style="color:#232F3E;font-size:10px;">' + rowInfo + '</span>';
         }
     }
 
+    // ============================================
+    // FLOATING PANEL UI
+    // ============================================
     function addExportPanel() {
         var existing = document.getElementById('grassExporterPanel');
-        if (existing) existing.remove();
+        if (existing) return;
 
         var panel = document.createElement('div');
         panel.id = 'grassExporterPanel';
         panel.style.cssText = 'position:fixed;top:10px;right:10px;z-index:99999;background:white;border:2px solid #FF9900;border-radius:10px;padding:12px 14px;box-shadow:0 4px 12px rgba(0,0,0,0.3);font-family:Arial,sans-serif;min-width:240px;max-width:300px;';
 
         var titleBar = document.createElement('div');
-        titleBar.textContent = 'GRASS CSV Exporter v7.0';
+        titleBar.textContent = '🛒 GRASS CSV Exporter v7.0';
         titleBar.style.cssText = 'font-weight:bold;font-size:14px;margin-bottom:8px;color:#232F3E;border-bottom:1px solid #eee;padding-bottom:6px;';
         panel.appendChild(titleBar);
 
@@ -658,7 +744,7 @@ app.get('/api/script', rateLimit, (req, res) => {
         panel.appendChild(hsInput);
 
         var previewBtn = document.createElement('button');
-        previewBtn.textContent = 'Preview Data';
+        previewBtn.textContent = '👁️ Preview Data';
         previewBtn.style.cssText = 'display:block;width:100%;padding:6px;margin-bottom:6px;background:#f0f0f0;color:#333;border:1px solid #ccc;border-radius:6px;font-size:12px;cursor:pointer;';
         previewBtn.addEventListener('click', function() {
             var d = collectedData;
@@ -669,38 +755,38 @@ app.get('/api/script', rateLimit, (req, res) => {
             var rowInfo = selectedRowIndex !== null ? 'Row ' + (selectedRowIndex + 1) : 'Row 1 (default)';
             var previewWeight = enforceMinWeight(d.weight);
             var preview = 'Collected Data:\\n\\n' +
-                'Selected: ' + rowInfo + '\\n' +
-                'Title (raw): ' + (d.title || '(empty)') + '\\n' +
-                'Title (clean): ' + (alphaTitle || '(empty)') + '\\n' +
-                'Price: ' + (d.price || '(empty)') + ' ' + (d.currency || '') + '\\n' +
-                'Qty: ' + (d.qty || '1') + '\\n' +
-                'Order ID: ' + (d.orderId || '(empty)') + '\\n' +
-                'Date: ' + getTodayFormatted() + ' (today)\\n' +
-                'Dimensions: ' + (d.dimL || '?') + ' x ' + (d.dimW || '?') + ' x ' + (d.dimH || '?') + '\\n' +
-                'Weight: ' + previewWeight + ' kg' + (d.weightConverted ? ' (converted from ' + d.originalWeight + ')' : '') + (parseFloat(d.weight) < 0.1 ? ' (bumped to 0.1)' : '') + '\\n' +
-                'Ship Option: ' + (d.customerShipOption || '(empty)') + '\\n' +
-                'Destination: ' + dest + '\\n' +
-                'Country of Origin: ' + coo + '\\n' +
-                'HS Code: ' + (d.hsCode || '(empty)') + '\\n' +
-                'Shipper Account: ' + sa + '\\n' +
-                'LPN: ' + STATIC_LPN + ' (static)';
+                '• Selected: ' + rowInfo + '\\n' +
+                '• Title (raw): ' + (d.title || '(empty)') + '\\n' +
+                '• Title (clean): ' + (alphaTitle || '(empty)') + '\\n' +
+                '• Price: ' + (d.price || '(empty)') + ' ' + (d.currency || '') + '\\n' +
+                '• Qty: ' + (d.qty || '1') + '\\n' +
+                '• Order ID: ' + (d.orderId || '(empty)') + '\\n' +
+                '• Date: ' + getTodayFormatted() + ' (today)\\n' +
+                '• Dimensions: ' + (d.dimL || '?') + ' x ' + (d.dimW || '?') + ' x ' + (d.dimH || '?') + '\\n' +
+                '• Weight: ' + previewWeight + ' kg' + (d.weightConverted ? ' (converted from ' + d.originalWeight + ')' : '') + (parseFloat(d.weight) < 0.1 ? ' (bumped to 0.1)' : '') + '\\n' +
+                '• Ship Option: ' + (d.customerShipOption || '(empty)') + '\\n' +
+                '• Destination: ' + dest + '\\n' +
+                '• Country of Origin: ' + coo + '\\n' +
+                '• HS Code: ' + (d.hsCode || '(empty)') + '\\n' +
+                '• Shipper Account: ' + sa + '\\n' +
+                '• LPN: ' + STATIC_LPN + ' (static)';
             alert(preview);
         });
         panel.appendChild(previewBtn);
 
         var scanBtn = document.createElement('button');
-        scanBtn.textContent = 'Scan This Page';
+        scanBtn.textContent = '🔍 Scan This Page';
         scanBtn.style.cssText = 'display:block;width:100%;padding:8px;margin-bottom:6px;background:#232F3E;color:white;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-weight:bold;';
         scanBtn.addEventListener('click', function() {
-            scanBtn.textContent = 'Scanning...';
+            scanBtn.textContent = '⏳ Scanning...';
             setTimeout(function() {
                 scrapeCurrentPage();
-                scanBtn.textContent = 'Scan This Page';
+                scanBtn.textContent = '🔍 Scan This Page';
                 var missing = getMissingFields();
                 if (missing.length === 0) {
-                    alert('All data collected! Destination: ' + (collectedData.destination || '').toUpperCase() + '. Click Export to download.');
+                    alert('✅ All data collected!\\nDestination: ' + (collectedData.destination || '').toUpperCase() + '\\nClick Export to download.');
                 } else {
-                    alert('Scan done! Still missing:\\n' + missing.join('\\n'));
+                    alert('✅ Scan done!\\n\\nStill missing:\\n• ' + missing.join('\\n• '));
                 }
             }, 500);
         });
@@ -708,32 +794,32 @@ app.get('/api/script', rateLimit, (req, res) => {
 
         var exportBtn = document.createElement('button');
         exportBtn.id = 'grassExportBtn';
-        exportBtn.textContent = 'Export to CSV';
+        exportBtn.textContent = '📥 Export to CSV';
         exportBtn.style.cssText = 'display:block;width:100%;padding:8px;margin-bottom:6px;background:#FF9900;color:#000;border:none;border-radius:6px;font-size:13px;cursor:pointer;font-weight:bold;';
         exportBtn.addEventListener('click', function() {
             var missing = getMissingFields();
             if (missing.length > 0) {
-                alert('Still missing:\\n' + missing.join('\\n'));
+                alert('⚠️ Still missing:\\n• ' + missing.join('\\n• '));
                 return;
             }
             try {
                 var csv = buildCSV();
                 var filename = 'shipment_' + (collectedData.orderId || 'unknown') + '_' + getTodayFormatted() + '.csv';
                 downloadCSV(csv, filename);
-                exportBtn.textContent = 'Downloaded!';
+                exportBtn.textContent = '✅ Downloaded!';
                 setTimeout(function() { updateButtonStatus(); }, 2000);
             } catch(err) {
-                alert('Error: ' + err.message);
+                alert('❌ Error: ' + err.message);
             }
         });
         panel.appendChild(exportBtn);
 
         var clearBtn = document.createElement('button');
-        clearBtn.textContent = 'Clear & New Shipment';
+        clearBtn.textContent = '🗑️ Clear & New Shipment';
         clearBtn.style.cssText = 'display:block;width:100%;padding:5px;background:#f5f5f5;color:#666;border:1px solid #ddd;border-radius:6px;font-size:11px;cursor:pointer;';
         clearBtn.addEventListener('click', function() {
             clearData();
-            alert('Data cleared!');
+            alert('🗑️ Data cleared!');
         });
         panel.appendChild(clearBtn);
 
@@ -741,16 +827,40 @@ app.get('/api/script', rateLimit, (req, res) => {
         updateButtonStatus();
     }
 
+    // ============================================
+    // PANEL PERSISTENCE — Re-inject if removed
+    // ============================================
+    function ensurePanelExists() {
+        if (!document.getElementById('grassExporterPanel')) {
+            console.log('[GRASS Exporter] Panel was removed — re-injecting...');
+            addExportPanel();
+        }
+    }
+
+    // ============================================
+    // INITIALIZE
+    // ============================================
     function init() {
         setTimeout(function() {
             addExportPanel();
             scrapeCurrentPage();
         }, 3000);
 
+        setInterval(ensurePanelExists, 2000);
+
         var debounceTimer = null;
-        var observer = new MutationObserver(function() {
+        var observer = new MutationObserver(function(mutations) {
+            var isOurChange = false;
+            for (var m = 0; m < mutations.length; m++) {
+                var target = mutations[m].target;
+                if (target && target.id === 'grassExporterPanel') { isOurChange = true; break; }
+                if (target && target.closest && target.closest('#grassExporterPanel')) { isOurChange = true; break; }
+            }
+            if (isOurChange) return;
+
             if (debounceTimer) clearTimeout(debounceTimer);
             debounceTimer = setTimeout(function() {
+                ensurePanelExists();
                 scrapeCurrentPage();
             }, 1500);
         });
@@ -762,6 +872,7 @@ app.get('/api/script', rateLimit, (req, res) => {
     } else {
         init();
     }
+
 })();
 `;
 
@@ -817,4 +928,3 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`License server running on port ${PORT}`);
 });
-
