@@ -14,7 +14,7 @@ const licenses = {
         user: "User1",
         active: true,
         expiresAt: "2026-11-30",
-        maxDevices: 2,
+        maxDevices: 3,
         activeDevices: [],
         createdAt: "2026-11-10"
     },
@@ -22,7 +22,7 @@ const licenses = {
         user: "User2",
         active: true,
         expiresAt: "2026-11-30",
-        maxDevices: 2,
+        maxDevices: 3,
         activeDevices: [],
         createdAt: "2026-11-10"
     }
