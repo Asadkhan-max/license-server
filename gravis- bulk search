@@ -1,0 +1,479 @@
+// ==UserScript==
+// @name         Gravis Bulk Tracking Search v7
+// @namespace    http://tampermonkey.net/
+// @version      7.0
+// @description  Bulk search tracking IDs in Gravis - scrapes page data + captures API calls via CSRF token
+// @match        *://eu-cretfc-tools-dub.dub.proxy.amazon.com/*
+// @grant        GM_xmlhttpRequest
+// @connect      eu-cretfc-tools-dub.dub.proxy.amazon.com
+// @run-at       document-idle
+// ==/UserScript==
+
+(function () {
+    'use strict';
+
+    // ---- Grab the CSRF token from the page (Gravis injects it) ----
+    function getCsrf() {
+        // Try meta tag first
+        var meta = document.querySelector('meta[name="anti-csrftoken-a2z"]');
+        if (meta) return meta.getAttribute('content');
+        // Try cookie
+        var m = document.cookie.match(/anti-csrftoken-a2z=([^;]+)/);
+        if (m) return m[1];
+        // Try hidden input
+        var inp = document.querySelector('input[name="anti-csrftoken-a2z"]');
+        if (inp) return inp.value;
+        // Try window variable
+        try { if (window.csrfToken) return window.csrfToken; } catch(e){}
+        return '';
+    }
+
+    setTimeout(function () {
+
+        var csrf = getCsrf();
+
+        var panel = document.createElement('div');
+        panel.setAttribute('id', 'gvbp');
+        panel.setAttribute('style',
+            'position:fixed;bottom:20px;right:20px;z-index:2147483647;width:580px;' +
+            'background:#232f3e;color:#fff;border-radius:10px;' +
+            'box-shadow:0 4px 24px rgba(0,0,0,.55);font-family:Arial,sans-serif;font-size:13px;' +
+            'display:block;visibility:visible;opacity:1;'
+        );
+
+        panel.innerHTML =
+            '<div id="gvbp-hdr" style="display:flex;justify-content:space-between;align-items:center;' +
+                'padding:10px 14px;background:#ff9900;color:#000;border-radius:10px 10px 0 0;cursor:move;">' +
+                '<strong style="font-size:14px;color:#000;">\u26a1 Gravis Bulk Search v7</strong>' +
+                '<button id="gvbp-min" style="background:none;border:none;color:#000;font-size:18px;' +
+                    'cursor:pointer;font-weight:bold;">\u2212</button>' +
+            '</div>' +
+            '<div id="gvbp-body" style="padding:12px;">' +
+
+                '<div style="font-size:11px;color:#aaa;margin-bottom:6px;">CSRF token: ' +
+                    (csrf ? '\u2705 Found' : '\u274c Not found \u2014 open a Gravis package page first') + '</div>' +
+
+                '<textarea id="gvbp-ids" style="width:100%;height:80px;border:1px solid #555;border-radius:6px;' +
+                    'padding:8px;font-size:12px;background:#1a1a2e;color:#0f0;resize:vertical;' +
+                    'box-sizing:border-box;" placeholder="Paste tracking IDs here\u2026\n(one per line, comma, or space separated)"></textarea>' +
+
+                '<div id="gvbp-cnt" style="margin:4px 0;color:#ff9900;font-size:12px;">0 IDs detected</div>' +
+
+                '<div style="display:flex;gap:6px;margin-bottom:6px;">' +
+                    '<button id="gvbp-go" style="flex:2;padding:8px;border:none;border-radius:6px;' +
+                        'cursor:pointer;font-size:12px;font-weight:bold;background:#ff9900;color:#000;">\ud83d\udd0d Fetch All</button>' +
+                    '<button id="gvbp-csv" style="flex:1;padding:8px;border:none;border-radius:6px;' +
+                        'cursor:pointer;font-size:12px;font-weight:bold;background:#067d62;color:#fff;">\ud83d\udce5 CSV</button>' +
+                    '<button id="gvbp-clr" style="flex:1;padding:8px;border:none;border-radius:6px;' +
+                        'cursor:pointer;font-size:12px;font-weight:bold;background:#555;color:#fff;">\ud83d\uddd1 Clear</button>' +
+                '</div>' +
+
+                '<div style="display:flex;gap:6px;margin-bottom:8px;">' +
+                    '<button id="gvbp-dbg" style="flex:1;padding:6px;border:none;border-radius:6px;' +
+                        'cursor:pointer;font-size:11px;font-weight:bold;background:#8B0000;color:#fff;">\ud83d\udc1b Debug: Inspect 1st ID</button>' +
+                    '<button id="gvbp-copy" style="flex:1;padding:6px;border:none;border-radius:6px;' +
+                        'cursor:pointer;font-size:11px;font-weight:bold;background:#444;color:#fff;display:none;">\ud83d\udccb Copy Debug Log</button>' +
+                '</div>' +
+
+                '<div id="gvbp-barw" style="width:100%;height:6px;background:#3a3a3a;border-radius:3px;' +
+                    'overflow:hidden;margin-bottom:4px;display:none;">' +
+                    '<div id="gvbp-bar" style="height:100%;width:0%;background:#ff9900;border-radius:3px;' +
+                        'transition:width .3s;"></div>' +
+                '</div>' +
+                '<div id="gvbp-prog" style="font-size:11px;color:#ff9900;min-height:16px;"></div>' +
+                '<div id="gvbp-sum" style="font-size:12px;color:#aaa;margin:4px 0;min-height:16px;"></div>' +
+
+                '<div id="gvbp-tw" style="max-height:300px;overflow-y:auto;margin-top:6px;border-radius:6px;">' +
+                    '<table id="gvbp-tbl" style="width:100%;border-collapse:collapse;font-size:11px;">' +
+                        '<thead><tr>' +
+                            '<th style="background:#37475a;color:#ff9900;padding:6px 4px;text-align:left;">#</th>' +
+                            '<th style="background:#37475a;color:#ff9900;padding:6px 4px;text-align:left;">Tracking ID</th>' +
+                            '<th style="background:#37475a;color:#ff9900;padding:6px 4px;text-align:left;">Activity Status</th>' +
+                            '<th style="background:#37475a;color:#ff9900;padding:6px 4px;text-align:left;">Escalation Reason</th>' +
+                        '</tr></thead>' +
+                        '<tbody id="gvbp-tb"></tbody>' +
+                    '</table>' +
+                '</div>' +
+
+                '<div id="gvbp-dbgbox" style="display:none;margin-top:8px;">' +
+                    '<div style="font-size:11px;color:#ff9900;margin-bottom:4px;">\ud83d\udc1b Debug Output:</div>' +
+                    '<textarea id="gvbp-dbgtxt" style="width:100%;height:180px;border:1px solid #555;' +
+                        'border-radius:6px;padding:6px;font-size:10px;background:#0a0a1a;color:#0f0;' +
+                        'resize:vertical;box-sizing:border-box;font-family:monospace;" readonly></textarea>' +
+                '</div>' +
+            '</div>';
+
+        document.body.appendChild(panel);
+
+        var results = [];
+        var busy = false;
+
+        function getIds() {
+            return document.getElementById('gvbp-ids').value
+                .split(/[\n,;\s]+/)
+                .map(function (s) { return s.trim(); })
+                .filter(function (s) { return s.length > 3; });
+        }
+
+        // ---- Build the page URL for a tracking ID ----
+        function pageUrl(id) {
+            return 'https://eu-cretfc-tools-dub.dub.proxy.amazon.com/gravis/returnPackage/' +
+                   encodeURIComponent(id) + '?selectedLocale=default';
+        }
+
+        // ---- Build the API URL ----
+        function apiUrl(id) {
+            return 'https://eu-cretfc-tools-dub.dub.proxy.amazon.com/getReturnPackageData' +
+                   '?packageId=' + encodeURIComponent(id) +
+                   '&locale=en_US&isAuthorizedToViewPrimaryGradingData=false';
+        }
+
+        // ---- Extract from JSON (API response) ----
+        function extractJson(data) {
+            var out = { activityStatus: 'N/A', escalationReason: 'N/A' };
+            if (!data || typeof data !== 'object') return out;
+            var str = JSON.stringify(data);
+
+            // Deep search helper
+            function deepFind(obj, keys) {
+                var found = null;
+                var lk = keys.map(function(k){ return k.toLowerCase(); });
+                function walk(o) {
+                    if (found !== null || o === null || typeof o !== 'object') return;
+                    if (Array.isArray(o)) { o.forEach(walk); return; }
+                    for (var k in o) {
+                        if (!Object.prototype.hasOwnProperty.call(o, k)) continue;
+                        var v = o[k];
+                        if (lk.indexOf(k.toLowerCase()) !== -1 && v !== null && v !== undefined) {
+                            found = String(v);
+                            return;
+                        }
+                        if (typeof v === 'object') walk(v);
+                    }
+                }
+                walk(obj);
+                return found;
+            }
+
+            var st = deepFind(data, ['activityStatus', 'activity_status', 'actStatus',
+                                     'gradingActivityStatus', 'status']);
+            if (st) out.activityStatus = st;
+
+            var er = deepFind(data, ['escalationReason', 'escalation_reason', 'escalateReason',
+                                     'gradingEscalationReason', 'reason']);
+            if (er) out.escalationReason = er;
+
+            return out;
+        }
+
+        // ---- Extract from HTML (page scrape) ----
+        function extractHtml(html) {
+            var out = { activityStatus: 'N/A', escalationReason: 'N/A' };
+            if (!html) return out;
+            try {
+                var doc = new DOMParser().parseFromString(html, 'text/html');
+                var txt = doc.body ? doc.body.innerText : html;
+
+                // Look for label:value pairs in the text
+                var lines = txt.split('\n').map(function(l){ return l.trim(); }).filter(Boolean);
+                for (var i = 0; i < lines.length; i++) {
+                    var lo = lines[i].toLowerCase();
+                    if (lo.indexOf('activity status') !== -1) {
+                        // Value is on the same line after the label, or the next line
+                        var after = lines[i].replace(/activity\s*status\s*[:\-]?\s*/i, '').trim();
+                        if (after.length > 0 && after.length < 80) {
+                            out.activityStatus = after;
+                        } else if (i + 1 < lines.length && lines[i+1].length < 80) {
+                            out.activityStatus = lines[i+1].trim();
+                        }
+                    }
+                    if (lo.indexOf('escalation reason') !== -1) {
+                        var after2 = lines[i].replace(/escalation\s*reason\s*[:\-]?\s*/i, '').trim();
+                        if (after2.length > 0 && after2.length < 200) {
+                            out.escalationReason = after2;
+                        } else if (i + 1 < lines.length && lines[i+1].length < 200) {
+                            out.escalationReason = lines[i+1].trim();
+                        }
+                    }
+                }
+
+                // Fallback: search all table cells / elements
+                if (out.activityStatus === 'N/A') {
+                    var allEls = doc.querySelectorAll('td, th, span, div, dd, dt, label, p, li');
+                    for (var j = 0; j < allEls.length; j++) {
+                        var ct = allEls[j].textContent.trim().toLowerCase();
+                        if (ct === 'activity status' && allEls[j + 1]) {
+                            var nv = allEls[j + 1].textContent.trim();
+                            if (nv.length > 0 && nv.length < 80) out.activityStatus = nv;
+                        }
+                        if (ct === 'escalation reason' && allEls[j + 1]) {
+                            var nv2 = allEls[j + 1].textContent.trim();
+                            if (nv2.length > 0 && nv2.length < 200) out.escalationReason = nv2;
+                        }
+                    }
+                }
+
+                // Keyword fallback
+                if (out.activityStatus === 'N/A') {
+                    if (txt.indexOf('ESCALATED') !== -1) out.activityStatus = 'ESCALATED';
+                    else if (txt.toLowerCase().indexOf('completed') !== -1) out.activityStatus = 'COMPLETED';
+                }
+            } catch(e) {
+                out.activityStatus = 'Parse Error';
+            }
+            return out;
+        }
+
+        // ---- Combined fetch: try API first, fall back to page scrape ----
+        function fetchId(id, callback) {
+            var headers = {
+                'Accept': 'application/json, text/html',
+                'Content-Type': 'application/json'
+            };
+            if (csrf) headers['anti-csrftoken-a2z'] = csrf;
+
+            // Try API endpoint first
+            GM_xmlhttpRequest({
+                method: 'GET',
+                url: apiUrl(id),
+                withCredentials: true,
+                headers: headers,
+                onload: function(resp) {
+                    var raw = resp.responseText || '';
+                    // If API returned valid JSON with data (not an error)
+                    if (resp.status === 200) {
+                        try {
+                            var data = JSON.parse(raw);
+                            if (!data.exceptionMessage) {
+                                var r = extractJson(data);
+                                callback(r, raw, 'api');
+                                return;
+                            }
+                        } catch(e) {}
+                    }
+
+                    // Fall back to page scrape
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: pageUrl(id),
+                        withCredentials: true,
+                        headers: { 'Accept': 'text/html' },
+                        onload: function(resp2) {
+                            var html = resp2.responseText || '';
+                            var r2 = extractHtml(html);
+                            callback(r2, html, 'page');
+                        },
+                        onerror: function() {
+                            callback({ activityStatus: 'Error', escalationReason: 'Fetch failed' }, '', 'error');
+                        }
+                    });
+                },
+                onerror: function() {
+                    // Fall back to page scrape
+                    GM_xmlhttpRequest({
+                        method: 'GET',
+                        url: pageUrl(id),
+                        withCredentials: true,
+                        headers: { 'Accept': 'text/html' },
+                        onload: function(resp2) {
+                            var html = resp2.responseText || '';
+                            var r2 = extractHtml(html);
+                            callback(r2, html, 'page');
+                        },
+                        onerror: function() {
+                            callback({ activityStatus: 'Error', escalationReason: 'Fetch failed' }, '', 'error');
+                        }
+                    });
+                }
+            });
+        }
+
+        function stColor(s) {
+            var lo = (s || '').toLowerCase();
+            if (lo === 'escalated') return '#ff4444';
+            if (lo === 'completed' || lo === 'received') return '#00cc66';
+            if (lo === 'error' || lo === 'parse error') return '#ff6666';
+            return '#ddd';
+        }
+
+        // ---- Count ----
+        document.getElementById('gvbp-ids').addEventListener('input', function () {
+            document.getElementById('gvbp-cnt').textContent = getIds().length + ' IDs detected';
+        });
+
+        // ---- DEBUG ----
+        document.getElementById('gvbp-dbg').addEventListener('click', function () {
+            var list = getIds();
+            if (list.length === 0) { alert('Paste at least one tracking ID.'); return; }
+
+            var id = list[0];
+            var prog = document.getElementById('gvbp-prog');
+            var dbgBox = document.getElementById('gvbp-dbgbox');
+            var dbgTxt = document.getElementById('gvbp-dbgtxt');
+            var copyBtn = document.getElementById('gvbp-copy');
+
+            prog.textContent = '\ud83d\udc1b Fetching ' + id + ' ...';
+            dbgBox.style.display = 'block';
+            dbgTxt.value = 'Loading...';
+
+            fetchId(id, function(result, raw, source) {
+                var info = '=== PARSED RESULT ===\n';
+                info += 'Source: ' + source + '\n';
+                info += 'CSRF token: ' + (csrf ? 'present' : 'MISSING') + '\n';
+                info += 'Activity Status: ' + result.activityStatus + '\n';
+                info += 'Escalation Reason: ' + result.escalationReason + '\n';
+                info += 'Response length: ' + raw.length + ' chars\n\n';
+                info += '=== FIRST 5000 CHARS OF RAW RESPONSE ===\n';
+                info += raw.substring(0, 5000);
+
+                dbgTxt.value = info;
+                copyBtn.style.display = 'block';
+                prog.textContent = '\ud83d\udc1b Done \u2014 Status: ' + result.activityStatus +
+                    ' | Reason: ' + result.escalationReason;
+            });
+        });
+
+        document.getElementById('gvbp-copy').addEventListener('click', function () {
+            var dbgTxt = document.getElementById('gvbp-dbgtxt');
+            dbgTxt.select();
+            document.execCommand('copy');
+            alert('Debug log copied!');
+        });
+
+        // ---- Fetch All ----
+        document.getElementById('gvbp-go').addEventListener('click', function () {
+            var list = getIds();
+            if (list.length === 0) { alert('Paste at least one tracking ID.'); return; }
+            if (busy) return;
+            busy = true;
+
+            var btn = document.getElementById('gvbp-go');
+            btn.disabled = true;
+            btn.textContent = '\u23f3 Fetching...';
+            btn.style.background = '#665500';
+            btn.style.color = '#999';
+
+            var tbody = document.getElementById('gvbp-tb');
+            tbody.innerHTML = '';
+            results = [];
+
+            var barW = document.getElementById('gvbp-barw');
+            var bar = document.getElementById('gvbp-bar');
+            var prog = document.getElementById('gvbp-prog');
+            var sum = document.getElementById('gvbp-sum');
+            barW.style.display = 'block';
+            bar.style.width = '0%';
+            prog.textContent = '';
+            sum.textContent = '';
+
+            list.forEach(function (id, i) {
+                var tr = document.createElement('tr');
+                tr.id = 'gvr' + i;
+                tr.innerHTML =
+                    '<td style="padding:5px;border-bottom:1px solid #333;color:#ddd;">' + (i+1) + '</td>' +
+                    '<td style="padding:5px;border-bottom:1px solid #333;color:#ddd;word-break:break-all;max-width:140px;">' + id + '</td>' +
+                    '<td style="padding:5px;border-bottom:1px solid #333;color:#ffaa00;">\u23f3</td>' +
+                    '<td style="padding:5px;border-bottom:1px solid #333;color:#ffaa00;">\u23f3</td>';
+                tbody.appendChild(tr);
+                results.push({ id: id, activityStatus: '', escalationReason: '' });
+            });
+
+            var idx = 0;
+            function next() {
+                if (idx >= list.length) {
+                    busy = false;
+                    btn.disabled = false;
+                    btn.textContent = '\ud83d\udd0d Fetch All';
+                    btn.style.background = '#ff9900';
+                    btn.style.color = '#000';
+                    bar.style.width = '100%';
+                    var esc = results.filter(function(r){ return r.activityStatus.toUpperCase() === 'ESCALATED'; }).length;
+                    var comp = results.filter(function(r){ return r.activityStatus.toUpperCase() === 'COMPLETED'; }).length;
+                    var other = list.length - esc - comp;
+                    prog.textContent = '\u2705 Done!';
+                    sum.textContent = list.length + ' checked  \u00b7  \ud83d\udd34 ' + esc +
+                        ' Escalated  \u00b7  \ud83d\udfe2 ' + comp + ' Completed' +
+                        (other > 0 ? '  \u00b7  \u26aa ' + other + ' Other' : '');
+                    return;
+                }
+
+                var id = list[idx];
+                var ci = idx;
+                prog.textContent = '\u23f3 Fetching ' + (ci+1) + ' / ' + list.length + ' \u2026';
+                bar.style.width = Math.round(((ci+1) / list.length) * 100) + '%';
+
+                fetchId(id, function(d) {
+                    results[ci] = { id: id, activityStatus: d.activityStatus, escalationReason: d.escalationReason };
+                    var row = document.getElementById('gvr' + ci);
+                    row.innerHTML =
+                        '<td style="padding:5px;border-bottom:1px solid #333;color:#ddd;">' + (ci+1) + '</td>' +
+                        '<td style="padding:5px;border-bottom:1px solid #333;color:#ddd;word-break:break-all;max-width:140px;">' + id + '</td>' +
+                        '<td style="padding:5px;border-bottom:1px solid #333;color:' + stColor(d.activityStatus) + ';font-weight:bold;">' + d.activityStatus + '</td>' +
+                        '<td style="padding:5px;border-bottom:1px solid #333;color:#ddd;max-width:200px;">' + d.escalationReason + '</td>';
+                    idx++;
+                    setTimeout(next, 800);
+                });
+            }
+            next();
+        });
+
+        // ---- CSV ----
+        document.getElementById('gvbp-csv').addEventListener('click', function () {
+            if (results.length === 0 || !results[0].activityStatus) {
+                alert('No results yet. Click "Fetch All" first.');
+                return;
+            }
+            var csv = 'Tracking ID,Activity Status,Escalation Reason\n';
+            results.forEach(function (r) {
+                csv += '"' + r.id + '","' + r.activityStatus + '","' + r.escalationReason.replace(/"/g, '""') + '"\n';
+            });
+            var blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+            var a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = 'gravis_escalation_' + new Date().toISOString().slice(0, 10) + '.csv';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(a.href);
+        });
+
+        // ---- Clear ----
+        document.getElementById('gvbp-clr').addEventListener('click', function () {
+            document.getElementById('gvbp-ids').value = '';
+            document.getElementById('gvbp-cnt').textContent = '0 IDs detected';
+            document.getElementById('gvbp-tb').innerHTML = '';
+            document.getElementById('gvbp-prog').textContent = '';
+            document.getElementById('gvbp-sum').textContent = '';
+            document.getElementById('gvbp-barw').style.display = 'none';
+            document.getElementById('gvbp-dbgbox').style.display = 'none';
+            results = [];
+        });
+
+        // ---- Minimize ----
+        document.getElementById('gvbp-min').addEventListener('click', function () {
+            var body = document.getElementById('gvbp-body');
+            var b = document.getElementById('gvbp-min');
+            if (body.style.display === 'none') { body.style.display = 'block'; b.textContent = '\u2212'; }
+            else { body.style.display = 'none'; b.textContent = '+'; }
+        });
+
+        // ---- Draggable ----
+        var hdr = document.getElementById('gvbp-hdr'), drag = false, ox, oy;
+        hdr.addEventListener('mousedown', function (e) {
+            drag = true;
+            ox = e.clientX - panel.getBoundingClientRect().left;
+            oy = e.clientY - panel.getBoundingClientRect().top;
+        });
+        document.addEventListener('mousemove', function (e) {
+            if (!drag) return;
+            panel.style.left = (e.clientX - ox) + 'px';
+            panel.style.top = (e.clientY - oy) + 'px';
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+        });
+        document.addEventListener('mouseup', function () { drag = false; });
+
+        console.log('[Gravis Bulk Search v7.0] Panel injected. CSRF: ' + (csrf ? 'found' : 'not found'));
+
+    }, 2000);
+})();
